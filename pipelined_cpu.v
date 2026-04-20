@@ -12,25 +12,25 @@ module pipelined_cpu (
     // --- PIPELINE WIRES & REGISTERS ---
     
     // FETCH STAGE
-    reg [15:0] pc;
+    reg [15:0] pc; // current program counter 
     reg [15:0] instr_mem [0:31]; // 32-word Instruction Memory
-    wire [15:0] fetch_instr;
-    wire predict_taken;
+    wire [15:0] fetch_instr;  // Stroing current instruction
+    wire predict_taken;  // --
     
     // IF/ID PIPELINE REGISTER
-    reg [15:0] if_id_pc;
-    reg [15:0] if_id_instr;
-    reg if_id_predicted_taken;
+    reg [15:0] if_id_pc; // Stored PC 
+    reg [15:0] if_id_instr; // Stored Instruction
+    reg if_id_predicted_taken; //  --
     
     // DECODE STAGE
-    reg [15:0] reg_file [0:15]; // 16 General Purpose Registers
-    wire stall;
+    reg [15:0] reg_file [0:15]; // 16 General Purpose Registers  (opcode : 4, Reg1 : 4, Reg2, 4 Reg3: 4)
+    wire stall; 
     
     // ID/EX PIPELINE REGISTER
-    reg [15:0] id_ex_pc;
-    reg [3:0]  id_ex_opcode;
-    reg [15:0] id_ex_val1, id_ex_val2;
-    reg [3:0]  id_ex_rd;
+    reg [15:0] id_ex_pc; // Stored PC in ID/EX 
+    reg [3:0]  id_ex_opcode; // ID/EX Opcode field : 4-bits
+    reg [15:0] id_ex_val1, id_ex_val2; // --
+    reg [3:0]  id_ex_rd;  // 
     reg id_ex_predicted_taken;
     reg id_ex_is_branch;
     
