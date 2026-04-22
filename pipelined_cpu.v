@@ -29,16 +29,18 @@ module pipelined_cpu (
     // ID/EX PIPELINE REGISTER
     reg [15:0] id_ex_pc; // Stored PC in ID/EX 
     reg [3:0]  id_ex_opcode; // ID/EX Opcode field : 4-bits
-    reg [15:0] id_ex_val1, id_ex_val2; // --
-    reg [3:0]  id_ex_rd;  // 
-    reg id_ex_predicted_taken;
-    reg id_ex_is_branch;
+    reg [15:0] id_ex_val1, id_ex_val2; // there two registers hold 16 bit data comming form both register 
+    reg [3:0]  id_ex_rd;  // Destination Register which contains Base Address
+    reg [3:0]  id_ex_rs1, id_ex_rs2; // Source registers for forwarding
+    reg id_ex_predicted_taken;  
+    reg id_ex_is_branch; // is set/unset by control unit if the opcode field contains 0101 (BEQ)
     
     // EXECUTE STAGE
-    reg [15:0] alu_result;
-    reg branch_actual_taken;
+    reg [15:0] alu_result; // 16 bit result of ALU 
+    reg branch_actual_taken; 
     reg branch_mispredicted;
-    wire [15:0] branch_target;
+    wire [15:0] branch_target; 
+    reg [15:0] alu_mux_A, alu_mux_B; 
     
     // EX/MEM PIPELINE REGISTER
     reg [3:0]  ex_mem_opcode;
@@ -70,6 +72,22 @@ module pipelined_cpu (
         .stall(stall)
     );
 
+    wire [1:0] forward_A;
+    wire [1:0] forward_B;
+    wire ex_mem_reg_write = (ex_mem_opcode == 4'b0001 || ex_mem_opcode == 4'b0010 || ex_mem_opcode == 4'b0011);
+    wire mem_wb_reg_write = (mem_wb_opcode == 4'b0001 || mem_wb_opcode == 4'b0010 || mem_wb_opcode == 4'b0011);
+
+    forwarding_unit fu (
+        .id_ex_rs1(id_ex_rs1),
+        .id_ex_rs2(id_ex_rs2),
+        .ex_mem_rd(ex_mem_rd),
+        .ex_mem_reg_write(ex_mem_reg_write),
+        .mem_wb_rd(mem_wb_rd),
+        .mem_wb_reg_write(mem_wb_reg_write),
+        .forward_A(forward_A),
+        .forward_B(forward_B)
+    );
+
     // --- INITIALIZATION FOR TESTBENCH ---
     initial begin
         // Hardcode a simple program into ROM
@@ -84,13 +102,17 @@ module pipelined_cpu (
         instr_mem[3] = 16'b0010_0010_0001_0011; 
         instr_mem[4] = 16'b0100_0010_0011_0000; 
         
-        reg_file[0] = 16'd0;
+        reg_file[0] = 16'd0; // 
         reg_file[1] = 16'd5; // Pre-load R1 for testing
         reg_file[2] = 16'd5; // Pre-load R2 to force BEQ to be true
-    end
+    end 
 
     assign fetch_instr = instr_mem[pc[4:0]];
     assign branch_target = id_ex_pc + id_ex_rd; // Simple target calculation
+
+    // --- ARCHITECTURE DEFINITIONS ---
+    // Instruction Format: [15:12] Opcode | [11:8] Rs1 | [7:4] Rs2 | [3:0] Rd/Imm
+    // Opcodes: 0001 (ADD), 0010 (SUB), 0011 (LOAD), 0100 (STORE), 0101 (BEQ)
 
     // --- MAIN PIPELINE CLOCK LOOP ---
     always @(posedge clk or posedge reset) begin
@@ -121,18 +143,32 @@ module pipelined_cpu (
             // 3. EXECUTE (EX) STAGE
             ex_mem_opcode <= id_ex_opcode;
             ex_mem_rd <= id_ex_rd;
-            ex_mem_val2 <= id_ex_val2;
+            
+            // Forwarding Muxes
+            case (forward_A)
+                2'b10: alu_mux_A = ex_mem_alu_res;
+                2'b01: alu_mux_A = (mem_wb_opcode == 4'b0011) ? mem_wb_mem_data : mem_wb_alu_res;
+                default: alu_mux_A = id_ex_val1;
+            endcase
+
+            case (forward_B)
+                2'b10: alu_mux_B = ex_mem_alu_res;
+                2'b01: alu_mux_B = (mem_wb_opcode == 4'b0011) ? mem_wb_mem_data : mem_wb_alu_res;
+                default: alu_mux_B = id_ex_val2;
+            endcase
+            
+            ex_mem_val2 <= alu_mux_B;
             
             // ALU Logic
             case (id_ex_opcode)
-                4'b0001: alu_result = id_ex_val1 + id_ex_val2; // ADD
-                4'b0010: alu_result = id_ex_val1 - id_ex_val2; // SUB
-                default: alu_result = id_ex_val1; // Default pass-through
+                4'b0001: alu_result = alu_mux_A + alu_mux_B; // ADD
+                4'b0010: alu_result = alu_mux_A - alu_mux_B; // SUB
+                default: alu_result = alu_mux_A; // Default pass-through
             endcase
             ex_mem_alu_res <= alu_result;
 
             // Branch Resolution Logic
-            branch_actual_taken = (id_ex_opcode == 4'b0101) && (id_ex_val1 == id_ex_val2);
+            branch_actual_taken = (id_ex_opcode == 4'b0101) && (alu_mux_A == alu_mux_B);
             branch_mispredicted = (id_ex_is_branch) && (branch_actual_taken != id_ex_predicted_taken);
             
             // 2. DECODE (ID) STAGE
@@ -140,12 +176,16 @@ module pipelined_cpu (
                 // Insert Bubble / Flush
                 id_ex_opcode <= 4'b0000;
                 id_ex_is_branch <= 1'b0;
+                id_ex_rs1 <= 4'b0;
+                id_ex_rs2 <= 4'b0;
             end else begin
                 id_ex_pc <= if_id_pc;
                 id_ex_opcode <= if_id_instr[15:12];
                 id_ex_val1 <= reg_file[if_id_instr[11:8]];
                 id_ex_val2 <= reg_file[if_id_instr[7:4]];
                 id_ex_rd <= if_id_instr[3:0];
+                id_ex_rs1 <= if_id_instr[11:8];
+                id_ex_rs2 <= if_id_instr[7:4];
                 id_ex_predicted_taken <= if_id_predicted_taken;
                 id_ex_is_branch <= (if_id_instr[15:12] == 4'b0101);
             end
